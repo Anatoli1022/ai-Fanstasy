@@ -1,0 +1,19 @@
+@import url('https://fonts.googleapis.com/css2?family=MedievalSharp&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  font-family: Inter, system-ui, sans-serif;
+}
+
+body {
+  margin: 0;
+  background: #0f172a;
+  color: #e2e8f0;
+}
+
+#__nuxt {
+  min-height: 100vh;
+}
