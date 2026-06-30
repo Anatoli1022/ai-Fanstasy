@@ -13,7 +13,7 @@ export const useWebSocket = () => {
     }
 
     const url = useRuntimeConfig().public.wsUrl
-    ws = new WebSocket(`${url}/ws?worldId=${encodeURIComponent(worldId)}`)
+    ws = new WebSocket(`${url}?worldId=${encodeURIComponent(worldId)}`)
 
     ws.onopen = () => {
       ws?.send(JSON.stringify({ type: 'join-world', worldId }))

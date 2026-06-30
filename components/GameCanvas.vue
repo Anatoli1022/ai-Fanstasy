@@ -1,103 +1,134 @@
 <template>
-  <div class="game-canvas-container">
-    <canvas ref="canvasRef" class="game-canvas" />
-    <div v-if="loading" class="loading-overlay">Loading world...</div>
-  </div>
+  <div
+    ref="canvasContainer"
+    class="w-full h-full bg-gray-900 relative overflow-hidden"
+  ></div>
 </template>
 
 <script setup lang="ts">
-const props = defineProps<{
-  world?: { id: string; seed: number; width: number; height: number }
-  sprites?: Array<{ id: string; x: number; y: number; race: string; role: string; state: string }>
-}>()
+import { ref, onMounted, watch } from "vue";
+import * as PIXI from "pixi.js";
+import { useWorld } from "~/composables/useWorld";
 
-const canvasRef = ref<HTMLCanvasElement | null>(null)
-const loading = ref(false)
+const canvasContainer = ref<HTMLDivElement>();
+const { agents, mapResources } = useWorld();
 
-watch(
-  () => props.sprites,
-  () => draw(),
-  { deep: true }
-)
+let app: PIXI.Application | null = null;
+const spriteMap = new Map<string, PIXI.Graphics>();
+const resourceSpriteMap = new Map<string, PIXI.Graphics>(); // Отдельный кэш для ресурсов
 
-function draw() {
-  if (!canvasRef.value) return
-  const ctx = canvasRef.value.getContext('2d')
-  if (!ctx) return
+onMounted(async () => {
+  if (!canvasContainer.value) return;
 
-  const width = props.world?.width ?? 20
-  const height = props.world?.height ?? 20
-  const cellSize = 32
+  // 👇 СНАЧАЛА инициализируем PixiJS
+  app = new PIXI.Application();
+  await app.init({
+    resizeTo: canvasContainer.value,
+    backgroundColor: 0x1a1a2e,
+    antialias: true,
+  });
 
-  canvasRef.value.width = width * cellSize
-  canvasRef.value.height = height * cellSize
+  if (canvasContainer.value && app?.canvas) {
+    canvasContainer.value.appendChild(app.canvas);
+  }
 
-  ctx.fillStyle = '#0f172a'
-  ctx.fillRect(0, 0, canvasRef.value.width, canvasRef.value.height)
+  // 👇 ПОТОМ рисуем начальные ресурсы (если уже загружены)
+  if (mapResources.value.length > 0) {
+    renderResources(mapResources.value);
+  }
 
-  for (let x = 0; x < width; x++) {
-    for (let y = 0; y < height; y++) {
-      ctx.fillStyle = (x + y) % 2 === 0 ? '#1e293b' : '#334155'
-      ctx.fillRect(x * cellSize, y * cellSize, cellSize, cellSize)
+  // Следим за агентами
+  watch(
+    agents,
+    (newAgents) => {
+      updateSprites(newAgents);
+    },
+    { deep: true },
+  );
+
+  // 👇 Следим за ресурсами
+  watch(
+    mapResources,
+    (newResources) => {
+      if (newResources) renderResources(newResources);
+    },
+    { deep: true },
+  );
+});
+
+function renderResources(resources: any[]) {
+  if (!app) return;
+
+  // Удаляем старые спрайты ресурсов
+  for (const sprite of resourceSpriteMap.values()) {
+    app.stage.removeChild(sprite);
+  }
+  resourceSpriteMap.clear();
+
+  // Рисуем новые
+  resources.forEach((res, index) => {
+    if (res.amount <= 0) return; // Не рисуем исчерпанные
+
+    const resSprite = new PIXI.Graphics();
+    let color = 0xffffff;
+    if (res.type === "food") color = 0x22c55e;
+    else if (res.type === "iron") color = 0x94a3b8;
+    else if (res.type === "wood") color = 0xa87141;
+    else if (res.type === "gold") color = 0xfbbf24;
+
+    resSprite.rect(0, 0, 8, 8).fill(color);
+    resSprite.x = res.x * 20 + 6;
+    resSprite.y = res.y * 20 + 6;
+
+    app.stage.addChildAt(resSprite, 0); // Рисуем ПОД агентами
+    resourceSpriteMap.set(res.id || `res-${index}`, resSprite);
+  });
+}
+
+function updateSprites(agentList: any[]) {
+  if (!app) {
+    console.warn("Pixi app not initialized yet!");
+    return;
+  }
+
+  console.log(
+    "🎨 Rendering",
+    agentList.length,
+    "agents. First pos:",
+    agentList[0]?.positionX,
+    agentList[0]?.positionY,
+  );
+
+  agentList.forEach((agent) => {
+    let sprite = spriteMap.get(agent.id);
+
+    if (!sprite) {
+      sprite = new PIXI.Graphics();
+      let color = 0xffffff;
+
+      if (agent.race === "elf") color = 0x4ade80;
+      else if (agent.race === "dwarf") color = 0xfbbf24;
+      else if (agent.race === "orc") color = 0xef4444;
+      else if (agent.race === "troll") color = 0xa855f7;
+      else if (agent.race === "human") color = 0x60a5fa;
+      else if (agent.race === "fae") color = 0xe879f9;
+
+      sprite.circle(0, 0, 6).fill(color);
+      app.stage.addChild(sprite);
+      spriteMap.set(agent.id, sprite);
+    }
+
+    sprite.x = agent.positionX * 20 + 10;
+    sprite.y = agent.positionY * 20 + 10;
+  });
+
+  // Удаляем спрайты умерших агентов
+  const currentIds = new Set(agentList.map((a) => a.id));
+  for (const [id, sprite] of spriteMap) {
+    if (!currentIds.has(id)) {
+      app.stage.removeChild(sprite);
+      spriteMap.delete(id);
     }
   }
-
-  for (const sprite of props.sprites ?? []) {
-    ctx.fillStyle = getRaceColor(sprite.race)
-    ctx.beginPath()
-    ctx.arc(
-      sprite.x * cellSize + cellSize / 2,
-      sprite.y * cellSize + cellSize / 2,
-      cellSize / 3,
-      0,
-      Math.PI * 2
-    )
-    ctx.fill()
-  }
 }
-
-function getRaceColor(race: string): string {
-  const colors: Record<string, string> = {
-    elf: '#4ade80',
-    dwarf: '#f97316',
-    orc: '#ef4444',
-    human: '#fbbf24',
-    fae: '#a78bfa',
-    troll: '#22c55e',
-  }
-  return colors[race] ?? '#ffffff'
-}
-
-onMounted(() => {
-  draw()
-  loading.value = false
-})
 </script>
-
-<style scoped>
-.game-canvas-container {
-  position: relative;
-  width: 100%;
-  height: 100%;
-  overflow: hidden;
-  background: #0f172a;
-}
-
-.game-canvas {
-  display: block;
-  width: 100%;
-  height: 100%;
-}
-
-.loading-overlay {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: rgba(0, 0, 0, 0.5);
-  color: #ffd700;
-  font-family: 'MedievalSharp', cursive;
-  font-size: 1.5rem;
-}
-</style>

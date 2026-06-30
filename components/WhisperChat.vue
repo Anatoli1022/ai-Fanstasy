@@ -1,159 +1,92 @@
 <template>
-  <div class="whisper-chat">
-    <h3 class="chat-title">Whisper to Leader</h3>
-    <div class="messages">
-      <div v-for="msg in messages" :key="msg.timestamp" class="message" :class="msg.role">
-        <span class="msg-role">{{ msg.role === 'player' ? 'You' : 'Leader' }}</span>
-        <p class="msg-text">{{ msg.text }}</p>
-      </div>
+  <div class="p-4 border-b border-gray-700 bg-gray-800/50">
+    <div class="flex justify-between items-center mb-2">
+      <h3 class="text-sm font-bold text-amber-400">Whisper to Leader</h3>
+
+      <!-- 👇 ВЫБОР ЛИДЕРА -->
+      <select
+        v-if="leaders.length > 1"
+        v-model="currentLeaderId"
+        @change="selectLeader(currentLeaderId)"
+        class="bg-gray-900 text-xs text-gray-300 border border-gray-600 rounded px-2 py-1 outline-none"
+      >
+        <option v-for="l in leaders" :key="l.id" :value="l.id">
+          {{ l.name }} ({{ l.race }})
+        </option>
+      </select>
     </div>
-    <form class="chat-form" @submit.prevent="send">
+
+    <div v-if="leader" class="text-xs text-gray-500 mb-2 capitalize">
+      Current focus: <span class="text-amber-500">{{ leader.name }}</span>
+    </div>
+
+    <form @submit.prevent="sendWhisper" class="flex gap-2">
       <input
-        v-model="input"
-        placeholder="Speak to your leader..."
-        class="chat-input"
-        :disabled="!connected"
+        v-model="message"
+        type="text"
+        placeholder="Give a command..."
+        :disabled="isLoading || !leader"
+        class="flex-1 bg-gray-900 border border-gray-600 rounded px-2 py-1 text-sm text-white focus:border-amber-500 outline-none disabled:opacity-50"
       />
-      <button type="submit" class="chat-send" :disabled="!connected || !input.trim()">
-        Send
+      <button
+        type="submit"
+        :disabled="!message || isLoading || !leader"
+        class="bg-amber-600 hover:bg-amber-500 text-white px-3 py-1 rounded text-sm disabled:opacity-50 transition-colors"
+      >
+        {{ isLoading ? "Thinking..." : "Send" }}
       </button>
     </form>
+
+    <div
+      v-if="lastResponse"
+      class="mt-3 p-2 bg-gray-900/50 rounded border-l-2 border-amber-500"
+    >
+      <p class="text-xs text-gray-300 italic">"{{ lastResponse }}"</p>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { useWebSocket } from '~/composables/useWebSocket'
+import { ref, computed } from "vue";
+import { useRoute } from "vue-router";
+import { useWorld } from "~/composables/useWorld";
 
-const props = defineProps<{
-  worldId: string
-}>()
+const route = useRoute();
+const worldId = route.params.worldId as string;
+const { leaders, selectedLeader, selectLeader, thoughts } = useWorld();
 
-const emit = defineEmits<{
-  (e: 'send', message: string): void
-}>()
+const leader = computed(() => selectedLeader.value);
+const currentLeaderId = ref(selectedLeader.value?.id || "");
 
-const ws = useWebSocket()
-const connected = computed(() => ws.isConnected)
-const input = ref('')
-const messages = ref<Array<{ role: 'player' | 'leader'; text: string; timestamp: number }>>([])
+const message = ref("");
+const isLoading = ref(false);
+const lastResponse = ref("");
 
-watch(
-  () => props.worldId,
-  () => {
-    messages.value = []
-    input.value = ''
+async function sendWhisper() {
+  if (!message.value || !leader.value) return;
+
+  const currentL = leader.value;
+  isLoading.value = true;
+
+  try {
+    const res = await $fetch("/api/leader/decide", {
+      method: "POST",
+      body: {
+        worldId,
+        message: message.value,
+        leaderName: currentL.name,
+        race: currentL.race,
+        recentEvents: thoughts.value.slice(0, 5),
+      },
+    });
+
+    lastResponse.value = res.command;
+    message.value = "";
+  } catch (e) {
+    console.error(e);
+    lastResponse.value = "The spirits are silent...";
+  } finally {
+    isLoading.value = false;
   }
-)
-
-onMounted(() => {
-  ws.onMessage('player-whisper', (msg: any) => {
-    messages.value.push({
-      role: 'leader',
-      text: msg.payload.message,
-      timestamp: Date.now(),
-    })
-  })
-})
-
-function send() {
-  const text = input.value.trim()
-  if (!text) return
-  messages.value.push({ role: 'player', text, timestamp: Date.now() })
-  ws.sendWhisper(text)
-  input.value = ''
 }
 </script>
-
-<style scoped>
-.chat-title {
-  font-family: 'MedievalSharp', cursive;
-  color: #ffd700;
-  font-size: 1rem;
-  text-align: center;
-}
-
-.messages {
-  flex: 1;
-  max-height: 120px;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.message {
-  padding: 6px 8px;
-  border-radius: 6px;
-  max-width: 85%;
-}
-
-.message.player {
-  align-self: flex-end;
-  background: #4a3b2a;
-  border: 1px solid #6b5842;
-}
-
-.message.leader {
-  align-self: flex-start;
-  background: #2d2416;
-  border: 1px solid #8b7355;
-}
-
-.msg-role {
-  font-size: 0.7rem;
-  color: #a8a29e;
-  display: block;
-}
-
-.msg-text {
-  margin: 2px 0 0;
-  font-size: 0.9rem;
-  color: #e7e5e4;
-}
-
-.chat-form {
-  display: flex;
-  gap: 6px;
-}
-
-.chat-input {
-  flex: 1;
-  background: #0f172a;
-  border: 1px solid #6b5842;
-  border-radius: 4px;
-  padding: 6px 10px;
-  color: #e7e5e4;
-  font-size: 0.9rem;
-  outline: none;
-}
-
-.chat-input:focus {
-  border-color: #ffd700;
-}
-
-.chat-send {
-  background: #8b7355;
-  color: #fff;
-  border: none;
-  border-radius: 4px;
-  padding: 6px 12px;
-  cursor: pointer;
-  font-weight: bold;
-  transition: background 0.2s ease;
-}
-
-.chat-send:hover:not(:disabled) {
-  background: #ffd700;
-  color: #0f172a;
-}
-
-.chat-send:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-.chat-input:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-</style>

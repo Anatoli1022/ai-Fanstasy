@@ -1,103 +1,169 @@
-import type { WorldState, WorldEvent } from './world';
-import { createWorld, serializeWorldState } from './world';
-import { tickAgent } from './agents';
-import { rollEventChance, generateUniqueEvent, applyEventEffects } from './events';
-import { rollQuoteChance, generateAgentQuote } from './quotes';
-import { requestLeaderDecision } from './leaders';
-import { worldScheduler } from './scheduler';
-import { socketServer } from '../ws';
-import { db } from '../db';
+// server/game/loop.ts
+import { eq } from "drizzle-orm";
+import { db } from "../db";
+import { resources as resourcesTable } from "../db/schema";
+import { updateWorldAgents } from "./agents";
+import { createWorldEvent } from "./events";
+import { socketServer } from "../ws";
 
-export type GameLoopHooks = {
-  onTick?: (world: WorldState) => void;
-  onDay?: (world: WorldState) => void;
-  onEvent?: (world: WorldState, event: WorldEvent) => void;
-  onQuote?: (world: WorldState, quote: ReturnType<typeof generateAgentQuote>) => void;
-};
+const activeLoops = new Map<string, NodeJS.Timeout>();
+const worldDays = new Map<string, number>();
+const worldMaps = new Map<string, any>();
 
-export function startWorldLoop(id: string, config: { width: number; height: number; tickRate: number; dayLength: number } = { width: 20, height: 20, tickRate: 1000, dayLength: 60 }) {
-  const world = createWorld(id, config);
+export async function startWorldLoop(worldId: string) {
+  if (activeLoops.has(worldId)) return;
 
-  worldScheduler.scheduleWorld(id, config.tickRate, (payload) => {
-    if (!world.alive) {
-      worldScheduler.clearWorld(id);
-      return;
-    }
+  console.log(`🌍 Starting game loop for world: ${worldId}`);
 
-    world.tick = payload.tick;
-    world.day = payload.day;
-    world.updatedAt = Date.now();
+  if (!worldMaps.has(worldId)) {
+    const dbResources = await db
+      .select()
+      .from(resourcesTable)
+      .where(eq(resourcesTable.worldId, worldId));
 
-    // 1. Update agents
-    const blocked = new Set<string>();
-    for (const sprite of world.sprites.values()) {
-      blocked.add(`${sprite.x},${sprite.y}`);
-    }
-
-    // In a real impl you'd iterate over agents array here.
-    // Placeholder for agent tick logic.
-    for (const [agentId, sprite] of world.sprites) {
-      // apply FSM / hunger / movement
-    }
-
-    // 2. Check for events
-    if (rollEventChance()) {
-      handleWorldEvent(world);
-    }
-
-    // 3. Generate quotes occasionally
-    if (rollQuoteChance(world.tick)) {
-      handleAgentQuote(world);
-    }
-
-    // 4. Leader decisions every day
-    if (world.tick % config.dayLength === 0) {
-      handleDayUpdate(world);
-    }
-
-    const snapshot = serializeWorldState(world);
-    socketServer.toWorld(id, {
-      type: 'world-update',
-      worldId: id,
-      timestamp: Date.now(),
-      payload: {
-        day: world.day,
-        tick: world.tick,
-        cells: Array.from(world.cells.entries()),
-        sprites: Array.from(world.sprites.values()).map((s) => ({ ...s })),
-        resources: world.resources,
+    // 👇 Инициализируем территории и отношения
+    worldMaps.set(worldId, {
+      resources: dbResources.map((r) => ({
+        id: r.id,
+        x: r.x,
+        y: r.y,
+        type: r.type,
+        amount: r.amount,
+      })),
+      // 👇 НОВЫЕ ТЕРРИТОРИИ - углы карты
+      territories: {
+        dwarf: { xMin: 0, xMax: 5, yMin: 0, yMax: 5 }, // 🏔️ Верх-лево
+        elf: { xMin: 15, xMax: 19, yMin: 0, yMax: 5 }, // 🌲 Верх-право
+        orc: { xMin: 0, xMax: 5, yMin: 15, yMax: 19 }, // 🏚️ Низ-лево
+        human: { xMin: 15, xMax: 19, yMin: 15, yMax: 19 }, // 🏰 Низ-право
       },
+      relations: {
+        dwarf: { elf: "neutral", orc: "hostile", human: "neutral" },
+        elf: { dwarf: "neutral", orc: "hostile", human: "ally" },
+        orc: { dwarf: "hostile", elf: "hostile", human: "hostile" },
+        human: { dwarf: "neutral", elf: "ally", orc: "hostile" },
+      },
+      warDeclarations: [],
     });
 
-    // Persist world state to DB (placeholder — add real serialization)
-    // await db.update(world);
-  });
+    console.log(
+      `🗺️ Loaded ${dbResources.length} resources for world ${worldId}`,
+    );
+  }
 
-  return world;
+  worldDays.set(worldId, 1);
+  let tickCount = 0;
+
+  const interval = setInterval(async () => {
+    try {
+      const map = worldMaps.get(worldId)!;
+      const day = worldDays.get(worldId)!;
+      tickCount++;
+
+      // Чистим устаревшие объявления войны
+      const now = Date.now();
+      map.warDeclarations = map.warDeclarations.filter(
+        (w: any) => w.until > now,
+      );
+
+      const result = await updateWorldAgents(worldId, map);
+
+      if (tickCount % 60 === 0) {
+        const newDay = day + 1;
+        worldDays.set(worldId, newDay);
+        await createWorldEvent(
+          worldId,
+          newDay,
+          "day_passed",
+          `Day ${newDay} begins`,
+        );
+        console.log(`📅 Day changed to ${newDay}`);
+      }
+
+      if (tickCount % 10 === 0) {
+        const leader = result.agents.find((a: any) => a.role === "leader");
+        if (leader) {
+          $fetch("/api/leader/decide", {
+            method: "POST",
+            body: {
+              worldId,
+              leaderName: leader.name,
+              race: leader.race,
+              recentEvents: result.thoughts.slice(0, 5),
+            },
+          })
+            .then((res) => res.json())
+            .then((data) => {
+              console.log(`🧠 Leader ${leader.name} says: "${data.command}"`);
+              result.thoughts.push(`👑 Leader ${leader.name}: ${data.command}`);
+            })
+            .catch((err) => console.error("AI Leader Error:", err));
+        }
+      }
+
+      socketServer.toWorld(worldId, {
+        type: "world-update",
+        payload: {
+          agents: result.agents,
+          thoughts: result.thoughts,
+          day: worldDays.get(worldId),
+          resources: map.resources,
+        },
+      });
+    } catch (error) {
+      console.error(`Error in world loop ${worldId}:`, error);
+    }
+  }, 1000);
+
+  activeLoops.set(worldId, interval);
 }
 
-async function handleWorldEvent(world: WorldState) {
-  const event = await generateUniqueEvent(world);
-  if (!event) return;
-  world.events.push(event);
-  applyEventEffects(world, event);
+// 🆕 Функция для объявления войны из API
+export function declareWar(
+  worldId: string,
+  attacker: string,
+  defender: string,
+  durationMinutes: number = 5,
+) {
+  const map = worldMaps.get(worldId);
+  if (!map) return false;
 
-  socketServer.toWorld(world.id, {
-    type: 'unique-event',
-    worldId: world.id,
-    timestamp: Date.now(),
-    payload: event,
-  });
+  const until = Date.now() + durationMinutes * 60 * 1000;
+  map.warDeclarations.push({ attacker, defender, until });
+
+  console.log(
+    `⚔️ WAR DECLARED: ${attacker} vs ${defender} for ${durationMinutes} minutes`,
+  );
+  return true;
 }
 
-async function handleDayUpdate(world: WorldState) {
-  if (!world.leader) return;
-  const decision = await requestLeaderDecision(world.leader, {
-    resources: world.resources,
-    relations: {},
-    threats: [],
-    opportunities: [],
-  });
+// 🆕 Функция для изменения отношений
+export function setRelation(
+  worldId: string,
+  race1: string,
+  race2: string,
+  relation: "ally" | "neutral" | "hostile",
+) {
+  const map = worldMaps.get(worldId);
+  if (!map) return false;
 
-  // Apply decision logic based on decision.type
+  if (!map.relations[race1]) map.relations[race1] = {};
+  if (!map.relations[race2]) map.relations[race2] = {};
+
+  map.relations[race1][race2] = relation;
+  map.relations[race2][race1] = relation;
+
+  console.log(`🤝 Relation set: ${race1} <-> ${race2} = ${relation}`);
+  return true;
+}
+
+export function stopWorldLoop(worldId: string) {
+  const interval = activeLoops.get(worldId);
+  if (interval) {
+    clearInterval(interval);
+    activeLoops.delete(worldId);
+    worldDays.delete(worldId);
+    worldMaps.delete(worldId);
+    console.log(`⏹ Stopped game loop for world: ${worldId}`);
+  }
 }

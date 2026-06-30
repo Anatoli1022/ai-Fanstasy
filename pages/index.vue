@@ -52,28 +52,30 @@ const isLoading = ref(false);
 
 async function startNewGame() {
   isLoading.value = true;
-  const userId = localStorage.getItem("userId"); // Берем сохраненный ID
 
-  if (!userId) {
-    alert("Please register first via Console (F12)");
-    isLoading.value = false;
-    return;
-  }
+  // Убрали проверку localStorage, так как сервер сам найдет admin@local.dev
 
   try {
     const seed = Math.floor(Math.random() * 1000000);
+
     const response = await $fetch("/api/world/create", {
       method: "POST",
       body: {
         name: "My First World",
-        seed: Math.floor(Math.random() * 1000000),
+        seed: seed,
         era: 1,
+        // userId больше не передаем, сервер возьмет его сам
       },
     });
-    router.push(`/game/${response.id}`);
+
+    if (response.id) {
+      router.push(`/game/${response.id}`);
+    } else {
+      alert("Error: No ID returned from server");
+    }
   } catch (error) {
-    console.error(error);
-    alert("Failed to create world");
+    console.error("Failed to create world:", error);
+    alert("Failed to create world. Check console for details.");
   } finally {
     isLoading.value = false;
   }

@@ -3,12 +3,14 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      extra_hosts:
+      - "ollama:host-gateway"
     ports:
       - "3000:3000"
     environment:
       - NUXT_WS_URL=ws://app:3000/ws
       - AI_PROVIDER=${AI_PROVIDER:-ollama}
-      - OLLAMA_URL=http://ollama:11434
+      - OLLAMA_URL=http://ollama:11434/v1
       - GROQ_API_KEY=${GROQ_API_KEY}
       - DATABASE_URL=postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres/${POSTGRES_DB:-ai_fantasy}
       - REDIS_URL=redis://redis:6379
@@ -19,7 +21,7 @@ services:
       redis:
         condition: service_healthy
       ollama:
-        condition: service_healthy
+         condition: service_started
     networks:
       - game-network
     restart: unless-stopped
@@ -71,14 +73,14 @@ services:
       - OLLAMA_MAX_LOADED_MODELS=1
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
-      interval: 20s
+      interval: 30s
       timeout: 10s
-      retries: 3
-      start_period: 60s
+      retries: 5
+      start_period: 120s
     deploy:
       resources:
         limits:
-          memory: 4g
+          memory: 6g
         reservations:
           memory: 2g
     networks:

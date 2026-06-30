@@ -38,7 +38,7 @@ export default defineNuxtConfig({
 
     public: {
       apiBase: "/api",
-      wsUrl: process.env.NUXT_WS_URL || "ws://localhost:3000/_ws",
+      wsUrl: process.env.NUXT_WS_URL || "ws://localhost:3000/ws",
       aiProvider: process.env.NUXT_AI_PROVIDER || "ollama",
       ollamaUrl: process.env.NUXT_OLLAMA_URL || "http://localhost:11434/v1",
       groqApiKey: process.env.NUXT_GROQ_API_KEY || "",
